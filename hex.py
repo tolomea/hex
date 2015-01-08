@@ -238,6 +238,33 @@ loop_puzzle2 = {
     },
 }
 
+loop_puzzle3 = {
+    "rows": [
+        r".X",
+        r"(AA|BB|CC)X",
+        r"XX",
+    ],
+    "cols": [
+        r"CC|AB|BA",
+        r"X.X",
+        r"XX",
+    ],
+    "diags": [
+        r"X.",
+        r"X(AA|BB|CC)",
+        r"XX",
+    ],
+    "answer": {
+        (0, 0): "C",
+        (0, 1): "C",
+        (1, 0): "X",
+        (1, 1): "C",
+        (1, 2): "X",
+        (2, 1): "X",
+        (2, 2): "X",
+    },
+}
+
 group_puzzle = {
     "rows": [
         r"XX",
@@ -281,18 +308,8 @@ nothing_puzzle = {
 }
 
 
-class Regex(object):
-    def __init__(self, regex_str):
-        l = list(regex_str)
-        self.exp = OrChain(l)
-        assert not l, l
-
-    def match(self, target):
-        result = [[set() for x in target]]
-        for state in self.exp.match(MatchState(target)):
-            if not state.remaining:
-                result.append(state.done)
-        return [set(chain(*x)) for x in zip(*result)]
+LETTERS = string.ascii_uppercase
+DIGITS = string.digits
 
 
 def get_char(e, chars):
@@ -300,10 +317,6 @@ def get_char(e, chars):
         return e.pop(0)
     else:
         return None
-
-
-LETTERS = string.ascii_uppercase
-DIGITS = string.digits
 
 
 class MatchState(namedtuple("MatchState", "remaining done groups")): # really seriously immutable
@@ -319,26 +332,41 @@ class MatchState(namedtuple("MatchState", "remaining done groups")): # really se
         if self.remaining:
             hits = self.remaining[0] & chars
             if hits:
-                return MatchState(self.remaining[1:], self.done + (hits,), self.groups)
-        return None
+                yield MatchState(self.remaining[1:], self.done + (hits,), self.groups)
 
-    def create_group(self):
+    def start_group(self):
         groups = self.groups + (None,)
         return MatchState(self.remaining, self.done, groups)
 
-    def set_group(self, old_state):
+    def end_group(self, old_state):
         # old_state must be the state returned by create_group
         groups = list(self.groups)
-        groups[len(old_state.groups) - 1] = (len(old_state.done), len(self.done))
+        group_idx = len(old_state.groups) - 1
+        assert groups[group_idx] is None
+        groups[group_idx] = (len(old_state.done), len(self.done))
         return MatchState(self.remaining, self.done, groups)
 
     def consume_group(self, index):
-        s,e = self.groups[index]
-        consume = tuple(o & n for o, n in zip(self.done[s:e], self.remaining))
-        if all(consume) and len(consume) == e-s:
+        start, end = self.groups[index]
+        consume = tuple(o & n for o, n in zip(self.done[start:end], self.remaining))
+        if all(consume) and len(consume) == end - start:
             remaining = self.remaining[len(consume):]
-            done = self.done[:s] + consume + self.done[e:] + consume
+            done = self.done[:start] + consume + self.done[end:] + consume
             return MatchState(remaining, done, self.groups)
+
+
+class Matcher(object):
+    def __init__(self, regex_str):
+        l = list(regex_str)
+        self.exp = OrChain(l)
+        assert not l, l  # check we consumed the whole string
+
+    def match(self, target):
+        matches = [[set() for x in target]]
+        for match in self.exp.match(MatchState(target)):
+            if not match.remaining:
+                matches.append(match.done)
+        return [set(chain(*x)) for x in zip(*matches)]
 
 
 class OrChain(object):
@@ -351,42 +379,38 @@ class OrChain(object):
         return "|".join(str(o) for o in self.options)
 
     def match(self, state):
-        state = state.create_group()
-
+        state = state.start_group()
         for option in self.options:
             for new_state in option.match(state):
-                yield new_state.set_group(state)
+                yield new_state.end_group(state)
 
 
 class ExpressionList(object):
     def __init__(self, e):
-        self.exps = [ModifierExpression(e)]
+        self.expressions = [ModifierExpression(e)]
         while e and e[0] in "[(\\." + LETTERS:
-            self.exps.append(ModifierExpression(e))
+            self.expressions.append(ModifierExpression(e))
 
     def __str__(self):
         return "".join(str(o) for o in self.exps)
 
     def match(self, state):
-        def recurse(state, exps):
-            if exps:
-                for partial_state in exps[0].match(state):
-                    for new_state in recurse(partial_state, exps[1:]):
+        def recurse(state, expressions):
+            if expressions:
+                for partial_state in expressions[0].match(state):
+                    for new_state in recurse(partial_state, expressions[1:]):
                         yield new_state
             else:
                 yield state
 
-        for new_state in recurse(state, self.exps):
+        for new_state in recurse(state, self.expressions):
             yield new_state
 
 
 class ModifierExpression(object):
     def __init__(self, e):
         self.expression = BasicExpression(e)
-        if e and e[0] in "*+?":
-            self.modifier = e.pop(0)
-        else:
-            self.modifier = None
+        self.modifier = get_char(e, "*+?")
 
     def __str__(self):
         res = str(self.expression)
@@ -426,22 +450,22 @@ def BasicExpression(e):
         if negate:
             letters = set(LETTERS) - letters
         assert get_char(e, "]")
-        return Letters(letters)
+        res = CharacterClass(letters)
     elif get_char(e, "("):
         res = OrChain(e)
         assert get_char(e, ")")
     elif get_char(e, "\\"):
-        res = ReferenceExpression(e)
+        res = BackReference(e)
     elif get_char(e, "."):
-        res = Letters(LETTERS)
+        res = CharacterClass(LETTERS)
     else:
         c = get_char(e, LETTERS)
         assert c
-        res = Letters(c)
+        res = CharacterClass(c)
     return res
 
 
-class ReferenceExpression(object):
+class BackReference(object):
     def __init__(self, e):
         self.group = int(get_char(e, DIGITS))
         assert self.group
@@ -455,13 +479,14 @@ class ReferenceExpression(object):
             yield new_state
 
 
-class Letters(object):
+class CharacterClass(object):
     def __init__(self, options):
         self.options = set(options)
 
     def __str__(self):
         if len(self.options) == 1:
-            return list(self.options)[0]
+            res, = self.options
+            return res
         elif self.options == set(LETTERS):
             return "."
         elif len(self.options) > 13:
@@ -470,48 +495,18 @@ class Letters(object):
             return "[" + "".join(sorted(self.options)) + "]"
 
     def match(self, state):
-        new_state = state.consume(self.options)
-        if new_state:
+        for new_state in state.consume(self.options):
             yield new_state
 
 
-class State(object):
-    def get_all_constraints(self):
-        # return all the constraints
-        pass
-
-    def evaluate(self, constraint):
-        # evaluate the given constraint, update this stat in place return a list of constraints that may need checking
-        pass
-
-    def copy(self):
-        # return a full copy of this state
-        pass
-
-    def solved(self):
-        # return true if this is a solved state
-        pass
-
-    def valid(self):
-        # return true if the state is valid
-        pass
-
-
-class HexPuzzle(State):
-    def __init__(self, puzzle):
-        rows = [Regex(e) for e in puzzle["rows"]]
-        cols = [Regex(e) for e in puzzle["cols"]]
-        diags = [Regex(e) for e in puzzle["diags"]]
-
-        size = len(rows)
-        assert len(cols) == size
-        assert len(diags) == size
+class Grid(object):
+    def __init__(self, size):
         hang = size // 2
         self.size = size
         self.hang = hang
 
-        # line is a tuple of the regex and the list of cell locations
-        # [(regex, [cell_index...])...]
+        # line is a list of cell locations
+        # [[cell_index...]...]
         self.lines = []
 
         # maps cell indicies to a set of line indicies
@@ -523,21 +518,21 @@ class HexPuzzle(State):
         self.cells = {}
 
         # rows
-        for y, regex in enumerate(rows):
+        for y in range(size):
             cell_ids = []
             for x in range(max(0, y-hang), min(size, y+hang+1)):
                 cell_ids.append((x, y))
-            self.lines.append((regex, cell_ids))
+            self.lines.append(cell_ids)
 
         # cols
-        for x, regex in enumerate(cols):
+        for x in range(size):
             cell_ids = []
             for y in range(max(0, x-hang), min(size, x+hang+1)):
                 cell_ids.append((x, y))
-            self.lines.append((regex, cell_ids))
+            self.lines.append(cell_ids)
 
         # diags
-        for i, regex in enumerate(diags):
+        for i in range(size):
             cell_ids = []
             if i < hang:
                 length = size - hang + i
@@ -549,13 +544,24 @@ class HexPuzzle(State):
                 start_y =  length - 1
             for j in range(length):
                 cell_ids.append((start_x - j, start_y - j))
-            self.lines.append((regex, cell_ids))
+            self.lines.append(cell_ids)
 
         # cells and cell_lines
-        for line_id, (regex, cells) in enumerate(self.lines):
+        for line_id, cells in enumerate(self.lines):
             for cell_id in cells:
                 self.cells[cell_id] = set(LETTERS)
                 self.cell_lines[cell_id].add(line_id)
+
+    def copy(self):
+        new = copy.copy(self)
+        new.cells = copy.deepcopy(self.cells)
+        return new
+
+    def solved(self):
+        return all(len(c) == 1 for c in self.cells.values())
+
+    def valid(self):
+        return all(c for c in self.cells.values())
 
     def dump(self):
         for y in range(self.size):
@@ -581,124 +587,68 @@ class HexPuzzle(State):
                 sys.stdout.write("  ")
             sys.stdout.write("\n")
 
-    def get_all_constraints(self):
-        return range(len(self.lines))
 
-    def evaluate(self, line_id):
-        regex, cell_ids = self.lines[line_id]
-        cells = [self.cells[cell_id] for cell_id in cell_ids]
-        new_cells = regex.match(cells)
-        for i, o, n in zip(cell_ids, cells, new_cells):
-            if n != o:
-                self.cells[i] = n
-                for x in self.cell_lines[i]:
-                    yield x
-
-    def copy(self):
-        new = copy.copy(self)
-        new.cells = copy.deepcopy(self.cells)
-        return new
-
-    def solved(self):
-        return all(len(c) == 1 for c in self.cells.values())
-
-    def valid(self):
-        return all(len(c) for c in self.cells.values())
-
-    def get_sub_states(self):
-        for k, v in self.cells.iteritems():
-            if len(v) > 1:
-                for choosen_v in v:
-                    new = self.copy()
-                    new.cells[k] = {choosen_v}
-                    yield new
-                break
-
-    def __eq__(self, other):
-        return hash(self.key()) == hash(other.key())
-
-    def __hash__(self):
-        return hash(self.key())
-
-    def key(self):
-        return tuple(frozenset(x) for x in self.cells)
-
-def propagate(state):
-    queue = set(state.get_all_constraints())
+def propagate(grid, matchers):
+    queue = set(range(len(grid.lines)))
     while queue:
-        constraint = queue.pop()
-        queue.update(state.evaluate(constraint))
+        line_id = queue.pop()
+        cell_ids = grid.lines[line_id]
+        old_cells = [grid.cells[cell_id] for cell_id in cell_ids]
+        new_cells = matchers[line_id].match(old_cells)
+        for cell_id, old_cell, new_cell in zip(cell_ids, old_cells, new_cells):
+            if old_cell != new_cell:
+                grid.cells[cell_id] = new_cell
+                queue.update(grid.cell_lines[cell_id])
 
 
-def constraint_prop_inner(initial_state):
-    state = initial_state.copy()
-    propagate(state)
-    if state.valid():
-        if state.solved():
-            yield state
+def search(grid, matchers):
+    propagate(grid, matchers)
+    if grid.valid():
+        if grid.solved():
+            yield grid
         else:
-            for sub_state in state.get_sub_states():
-                for x in constraint_prop_inner(sub_state):
-                    yield x
-
-
-def constraint_prop(initial_state):
-    solutions = set()
-    for x in constraint_prop_inner(initial_state):
-        if x not in solutions:
-            solutions.add(x)
-            yield x
+            for cell_id, cell in grid.cells.iteritems():
+                if len(cell) > 1:
+                    for value in cell:
+                        new_state = grid.copy()
+                        new_state.cells[cell_id] = {value}
+                        for x in search(new_state, matchers):
+                            yield x
+                    break
 
 
 if __name__ == "__main__":
     def solve(puzzle):
+        matchers = []
+        matchers.extend(Matcher(e) for e in puzzle["rows"])
+        matchers.extend(Matcher(e) for e in puzzle["cols"])
+        matchers.extend(Matcher(e) for e in puzzle["diags"])
+
         print "-" * 20
-        hp = HexPuzzle(puzzle)
-        #hp, = constraint_prop(hp)
-        for hp in constraint_prop(hp):
-            hp.dump()
-
-            hp2 = hp.copy()
-            propagate(hp2)
-            assert hp == hp2
-            assert hp2.valid()
-            assert hp2.solved()
-
+        grid = Grid(len(puzzle["rows"]))
+        for grid in search(grid, matchers):
+            grid.dump()
             print
-        assert {k: "".join(v) for k, v in hp.cells.iteritems()} == puzzle["answer"]
+        assert {k: "".join(v) for k, v in grid.cells.iteritems()} == puzzle["answer"]
 
     c = [set("ABC"), set("ABC"), set("ABC")]
-    x = Regex(".*").match(c)
+    x = Matcher(".*").match(c)
     assert x == [set("ABC"), set("ABC"), set("ABC")], x
 
     c = [set("BC"), set("AC"), set("AB")]
-    assert Regex(".*").match(c) == [set("BC"), set("AC"), set("AB")]
-    assert Regex("[AB]*").match(c) == [set("B"), set("A"), set("AB")]
-    assert Regex("(A|B)*").match(c) == [set("B"), set("A"), set("AB")]
-    assert Regex("(A|B)*B").match(c) == [set("B"), set("A"), set("B")]
-    assert Regex("....?").match(c) == [set("BC"), set("AC"), set("AB")]
-    assert Regex("(.*)*").match(c) == [set("BC"), set("AC"), set("AB")]
-    assert Regex(".*.*").match(c) == [set("BC"), set("AC"), set("AB")]
+    assert Matcher(".*").match(c) == [set("BC"), set("AC"), set("AB")]
+    assert Matcher("[AB]*").match(c) == [set("B"), set("A"), set("AB")]
+    assert Matcher("(A|B)*").match(c) == [set("B"), set("A"), set("AB")]
+    assert Matcher("(A|B)*B").match(c) == [set("B"), set("A"), set("B")]
+    assert Matcher("....?").match(c) == [set("BC"), set("AC"), set("AB")]
+    assert Matcher("(.*)*").match(c) == [set("BC"), set("AC"), set("AB")]
+    assert Matcher(".*.*").match(c) == [set("BC"), set("AC"), set("AB")]
     c = [set("C"), set("A"), set("A")]
-    assert Regex(r"(.)\1\1").match(c) == [set(), set(), set()]
+    assert Matcher(r"(.)\1\1").match(c) == [set(), set(), set()]
 
     solve(original_puzzle)
     solve(group_puzzle)
     solve(nothing_puzzle)
     solve(loop_puzzle)
     solve(loop_puzzle2)
-
-
-"""
-  A B C
- D E F G
-H I J K L
- M N O P
-  Q R S
-
-A B C
-D E F G
-H I J K L
-  M N O P
-    Q R S
-"""
+    solve(loop_puzzle3)
