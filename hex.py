@@ -4,6 +4,8 @@ import string
 from itertools import chain
 from collections import defaultdict, namedtuple
 import sys
+import copy
+
 
 original_puzzle = {
     "rows": [
@@ -200,11 +202,38 @@ loop_puzzle = {
     ],
     "answer": {
         (0, 0): "B",
-        (0, 1): "B",
+        (0, 1): "A",
         (1, 0): "X",
-        (1, 1): "B",
+        (1, 1): "A",
         (1, 2): "X",
-        (2, 1): "B",
+        (2, 1): "A",
+        (2, 2): "X",
+    },
+}
+
+loop_puzzle2 = {
+    "rows": [
+        r".X",
+        r"(.)\1\1",
+        r"XX",
+    ],
+    "cols": [
+        r"CC|AB|BA",
+        r".*",
+        r".*",
+    ],
+    "diags": [
+        r".*",
+        r".(CC|AA|BB)",
+        r".*",
+    ],
+    "answer": {
+        (0, 0): "C",
+        (0, 1): "C",
+        (1, 0): "X",
+        (1, 1): "C",
+        (1, 2): "X",
+        (2, 1): "C",
         (2, 2): "X",
     },
 }
@@ -252,6 +281,20 @@ nothing_puzzle = {
 }
 
 
+class Regex(object):
+    def __init__(self, regex_str):
+        l = list(regex_str)
+        self.exp = OrChain(l)
+        assert not l, l
+
+    def match(self, target):
+        result = [[set() for x in target]]
+        for state in self.exp.match(MatchState(target)):
+            if not state.remaining:
+                result.append(state.done)
+        return [set(chain(*x)) for x in zip(*result)]
+
+
 def get_char(e, chars):
     if e and e[0] in chars:
         return e.pop(0)
@@ -261,12 +304,6 @@ def get_char(e, chars):
 
 LETTERS = string.ascii_uppercase
 DIGITS = string.digits
-
-
-class Bob(namedtuple("Bob", "a b")):
-    def __init__(self, a, b):
-        super(Bob, self).__init__(a, b)
-        self.x = a+b
 
 
 class MatchState(namedtuple("MatchState", "remaining done groups")): # really seriously immutable
@@ -394,7 +431,7 @@ def BasicExpression(e):
         res = OrChain(e)
         assert get_char(e, ")")
     elif get_char(e, "\\"):
-        res = ClassExpression(e)
+        res = ReferenceExpression(e)
     elif get_char(e, "."):
         res = Letters(LETTERS)
     else:
@@ -404,7 +441,7 @@ def BasicExpression(e):
     return res
 
 
-class ClassExpression(object):
+class ReferenceExpression(object):
     def __init__(self, e):
         self.group = int(get_char(e, DIGITS))
         assert self.group
@@ -438,25 +475,34 @@ class Letters(object):
             yield new_state
 
 
-def parse(regexp_str):
-    l = list(regexp_str)
-    res = OrChain(l)
-    assert not l, l
-    return res
+class State(object):
+    def get_all_constraints(self):
+        # return all the constraints
+        pass
+
+    def evaluate(self, constraint):
+        # evaluate the given constraint, update this stat in place return a list of constraints that may need checking
+        pass
+
+    def copy(self):
+        # return a full copy of this state
+        pass
+
+    def solved(self):
+        # return true if this is a solved state
+        pass
+
+    def valid(self):
+        # return true if the state is valid
+        pass
 
 
-def match(regexp, char_list):
-    new_char_lists = []
-    for state in regexp.match(MatchState(char_list)):
-        if not state.remaining:
-            new_char_lists.append(state.done)
-    assert new_char_lists
-    new_char_list = [set(chain(*x)) for x in zip(*new_char_lists)]
-    return new_char_list
+class HexPuzzle(State):
+    def __init__(self, puzzle):
+        rows = [Regex(e) for e in puzzle["rows"]]
+        cols = [Regex(e) for e in puzzle["cols"]]
+        diags = [Regex(e) for e in puzzle["diags"]]
 
-
-class HexGrid(object):
-    def __init__(self, rows, cols, diags):
         size = len(rows)
         assert len(cols) == size
         assert len(diags) == size
@@ -465,13 +511,15 @@ class HexGrid(object):
         self.hang = hang
 
         # line is a tuple of the regex and the list of cell locations
+        # [(regex, [cell_index...])...]
         self.lines = []
 
-        # maps cell indicies to line indicies
+        # maps cell indicies to a set of line indicies
+        # {cell_index: {line_index...}}
         self.cell_lines = defaultdict(set)
 
-        # cell is a set of possible values for that location
-        # indexed by (row, col)
+        # cell is a set of possible values for that location indexed by (row, col)
+        # {(row, col): {possible_value...}}
         self.cells = {}
 
         # rows
@@ -533,53 +581,124 @@ class HexGrid(object):
                 sys.stdout.write("  ")
             sys.stdout.write("\n")
 
+    def get_all_constraints(self):
+        return range(len(self.lines))
 
-def flat(cells):
-    return ["".join(sorted(c)) for c in cells]
-
-
-def solve(puzzle):
-    # check the grid is symettric
-    grid = HexGrid(
-        [parse(e) for e in puzzle["rows"]],
-        [parse(e) for e in puzzle["cols"]],
-        [parse(e) for e in puzzle["diags"]],
-    )
-
-    queue = set(range(len(grid.lines)))
-
-    while queue:
-        line_id = queue.pop()
-        regex, cell_ids = grid.lines[line_id]
-        cells = [grid.cells[cell_id] for cell_id in cell_ids]
-#        print line_id, regex
-#        print flat(cells)
-        new_cells = match(regex, cells)
-#        print flat(new_cells)
-#        print
+    def evaluate(self, line_id):
+        regex, cell_ids = self.lines[line_id]
+        cells = [self.cells[cell_id] for cell_id in cell_ids]
+        new_cells = regex.match(cells)
         for i, o, n in zip(cell_ids, cells, new_cells):
             if n != o:
-                grid.cells[i] = n
-                queue.update(grid.cell_lines[i])
-    grid.dump()
-    assert {k: "".join(v) for k, v in grid.cells.iteritems()} == puzzle["answer"]
+                self.cells[i] = n
+                for x in self.cell_lines[i]:
+                    yield x
+
+    def copy(self):
+        new = copy.copy(self)
+        new.cells = copy.deepcopy(self.cells)
+        return new
+
+    def solved(self):
+        return all(len(c) == 1 for c in self.cells.values())
+
+    def valid(self):
+        return all(len(c) for c in self.cells.values())
+
+    def get_sub_states(self):
+        for k, v in self.cells.iteritems():
+            if len(v) > 1:
+                for choosen_v in v:
+                    new = self.copy()
+                    new.cells[k] = {choosen_v}
+                    yield new
+                break
+
+    def __eq__(self, other):
+        return hash(self.key()) == hash(other.key())
+
+    def __hash__(self):
+        return hash(self.key())
+
+    def key(self):
+        return tuple(frozenset(x) for x in self.cells)
+
+def propagate(state):
+    queue = set(state.get_all_constraints())
+    while queue:
+        constraint = queue.pop()
+        queue.update(state.evaluate(constraint))
+
+
+def constraint_prop_inner(initial_state):
+    state = initial_state.copy()
+    propagate(state)
+    if state.valid():
+        if state.solved():
+            yield state
+        else:
+            for sub_state in state.get_sub_states():
+                for x in constraint_prop_inner(sub_state):
+                    yield x
+
+
+def constraint_prop(initial_state):
+    solutions = set()
+    for x in constraint_prop_inner(initial_state):
+        if x not in solutions:
+            solutions.add(x)
+            yield x
 
 
 if __name__ == "__main__":
+    def solve(puzzle):
+        print "-" * 20
+        hp = HexPuzzle(puzzle)
+        #hp, = constraint_prop(hp)
+        for hp in constraint_prop(hp):
+            hp.dump()
+
+            hp2 = hp.copy()
+            propagate(hp2)
+            assert hp == hp2
+            assert hp2.valid()
+            assert hp2.solved()
+
+            print
+        assert {k: "".join(v) for k, v in hp.cells.iteritems()} == puzzle["answer"]
+
     c = [set("ABC"), set("ABC"), set("ABC")]
-    x = match(parse(".*"), c)
+    x = Regex(".*").match(c)
     assert x == [set("ABC"), set("ABC"), set("ABC")], x
 
     c = [set("BC"), set("AC"), set("AB")]
-    assert match(parse(".*"), c) == [set("BC"), set("AC"), set("AB")]
-    assert match(parse("[AB]*"), c) == [set("B"), set("A"), set("AB")]
-    assert match(parse("(A|B)*"), c) == [set("B"), set("A"), set("AB")]
-    assert match(parse("(A|B)*B"), c) == [set("B"), set("A"), set("B")]
-    assert match(parse("....?"), c) == [set("BC"), set("AC"), set("AB")]
-    assert match(parse("(.*)*"), c) == [set("BC"), set("AC"), set("AB")]
-    assert match(parse(".*.*"), c) == [set("BC"), set("AC"), set("AB")]
+    assert Regex(".*").match(c) == [set("BC"), set("AC"), set("AB")]
+    assert Regex("[AB]*").match(c) == [set("B"), set("A"), set("AB")]
+    assert Regex("(A|B)*").match(c) == [set("B"), set("A"), set("AB")]
+    assert Regex("(A|B)*B").match(c) == [set("B"), set("A"), set("B")]
+    assert Regex("....?").match(c) == [set("BC"), set("AC"), set("AB")]
+    assert Regex("(.*)*").match(c) == [set("BC"), set("AC"), set("AB")]
+    assert Regex(".*.*").match(c) == [set("BC"), set("AC"), set("AB")]
+    c = [set("C"), set("A"), set("A")]
+    assert Regex(r"(.)\1\1").match(c) == [set(), set(), set()]
 
     solve(original_puzzle)
     solve(group_puzzle)
     solve(nothing_puzzle)
-#    solve(loop_puzzle)
+    solve(loop_puzzle)
+    solve(loop_puzzle2)
+
+
+"""
+  A B C
+ D E F G
+H I J K L
+ M N O P
+  Q R S
+
+A B C
+D E F G
+H I J K L
+  M N O P
+    Q R S
+"""
