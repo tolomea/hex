@@ -2,10 +2,8 @@ from __future__ import division
 
 import string
 from itertools import chain
-from collections import defaultdict
+from collections import defaultdict, namedtuple
 import sys
-import json
-from contextlib import contextmanager
 
 original_puzzle = {
     "rows": [
@@ -211,7 +209,7 @@ loop_puzzle = {
     },
 }
 
-context_puzzle = {
+group_puzzle = {
     "rows": [
         r"XX",
         r"(.)\1\1",
@@ -238,6 +236,21 @@ context_puzzle = {
     },
 }
 
+nothing_puzzle = {
+    "rows": [
+        r"(.*)*X",
+    ],
+    "cols": [
+        r"(.?)+X",
+    ],
+    "diags": [
+        r"(.*)\1X",
+    ],
+    "answer": {
+        (0, 0): "X",
+    },
+}
+
 
 def get_char(e, chars):
     if e and e[0] in chars:
@@ -250,36 +263,45 @@ LETTERS = string.ascii_uppercase
 DIGITS = string.digits
 
 
-class State(object):
-    def __init__(self, remaining, used=(), context=()):
-        self.remaining = tuple(remaining)
-        self.used = tuple(used)
-        self.context = tuple(context)
+class Bob(namedtuple("Bob", "a b")):
+    def __init__(self, a, b):
+        super(Bob, self).__init__(a, b)
+        self.x = a+b
+
+
+class MatchState(namedtuple("MatchState", "remaining done groups")): # really seriously immutable
+    __slots__ = ()
+
+    def __new__(cls, remaining, done=(), groups=()):
+        remaining = tuple(remaining)
+        done = tuple(done)
+        groups = tuple(groups)
+        return super(MatchState, cls).__new__(cls, remaining, done, groups)
 
     def consume(self, chars):
         if self.remaining:
             hits = self.remaining[0] & chars
             if hits:
-                return State(self.remaining[1:], self.used + (hits,), self.context)
+                return MatchState(self.remaining[1:], self.done + (hits,), self.groups)
         return None
 
-    def create_context(self):
-        context = self.context + (None,)
-        return State(self.remaining, self.used, context)
+    def create_group(self):
+        groups = self.groups + (None,)
+        return MatchState(self.remaining, self.done, groups)
 
-    def set_context(self, old_state):
-        # old_state must be the state returned by create_context
-        context = list(self.context)
-        context[len(old_state.context) - 1] = (len(old_state.used), len(self.used))
-        return State(self.remaining, self.used, context)
+    def set_group(self, old_state):
+        # old_state must be the state returned by create_group
+        groups = list(self.groups)
+        groups[len(old_state.groups) - 1] = (len(old_state.done), len(self.done))
+        return MatchState(self.remaining, self.done, groups)
 
-    def consume_context(self, index):
-        s,e = self.context[index]
-        consume = tuple(o & n for o, n in zip(self.used[s:e], self.remaining))
+    def consume_group(self, index):
+        s,e = self.groups[index]
+        consume = tuple(o & n for o, n in zip(self.done[s:e], self.remaining))
         if all(consume) and len(consume) == e-s:
             remaining = self.remaining[len(consume):]
-            used = self.used[:s] + consume + self.used[e:] + consume
-            return State(remaining, used, self.context)
+            done = self.done[:s] + consume + self.done[e:] + consume
+            return MatchState(remaining, done, self.groups)
 
 
 class OrChain(object):
@@ -292,11 +314,11 @@ class OrChain(object):
         return "|".join(str(o) for o in self.options)
 
     def match(self, state):
-        state = state.create_context()
+        state = state.create_group()
 
         for option in self.options:
             for new_state in option.match(state):
-                yield new_state.set_context(state)
+                yield new_state.set_group(state)
 
 
 class ExpressionList(object):
@@ -340,8 +362,8 @@ class ModifierExpression(object):
     def match(self, state):
         def recurse(state):
             for partial_state in self.expression.match(state):
-                if len(partial_state.used) > len(state.used):
-                    yield partial_state
+                yield partial_state
+                if len(partial_state.done) > len(state.done):
                     for new_state in recurse(partial_state):
                         yield new_state
 
@@ -391,7 +413,7 @@ class ClassExpression(object):
         return "\\" + str(self.group)
 
     def match(self, state):
-        new_state = state.consume_context(self.group)
+        new_state = state.consume_group(self.group)
         if new_state:
             yield new_state
 
@@ -425,9 +447,9 @@ def parse(regexp_str):
 
 def match(regexp, char_list):
     new_char_lists = []
-    for new_state in regexp.match(State(char_list)):
-        if not new_state.remaining:
-            new_char_lists.append(new_state.used)
+    for state in regexp.match(MatchState(char_list)):
+        if not state.remaining:
+            new_char_lists.append(state.done)
     assert new_char_lists
     new_char_list = [set(chain(*x)) for x in zip(*new_char_lists)]
     return new_char_list
@@ -558,5 +580,6 @@ if __name__ == "__main__":
     assert match(parse(".*.*"), c) == [set("BC"), set("AC"), set("AB")]
 
     solve(original_puzzle)
-    solve(context_puzzle)
+    solve(group_puzzle)
+    solve(nothing_puzzle)
 #    solve(loop_puzzle)
