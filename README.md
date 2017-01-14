@@ -1,6 +1,7 @@
 # Solving hexagonal regexp crosswords
 
-Lets write a solver for ![this beast](regex-crossword-puzzle.png).
+Lets write a solver for this beast.
+![regex crossword](regex-crossword-puzzle.png)
 
 First step, break the problem down, we have a hexgrid, always a fun way to start. Each cell in the grid can take a letter as it's value. Along each row, column and diagonal of the grid... lets just call them "lines". Along each line of the grid is a regexp that constrains the values of the cells in that line.
 
@@ -367,28 +368,8 @@ def propagate(grid, matchers):
 
 ## 6: Search
 
-You thought we were done didn't you? As it turns out the original problem can be solved entirely with constraint propagation, so the above is sufficient. However this is not always the case. Consider the puzzle that has these regexps (always in anticlockwise order like in the original):
-
-Left (top to bottom)
-```
-.X
-(AA|BB|CC)X
-XX
-```
-
-Bottom right (left to right)
-```
-X.
-X(AA|BB|CC)
-XX
-```
-
-Top right (right to left)
-```
-XX
-X.X
-CC|AB|BA
-```
+You thought we were done didn't you? As it turns out the original problem can be solved entirely with constraint propagation, so the above is sufficient. However this is not always the case. Consider this puzzle:
+![small regex crossword](regex-crossword-puzzle-small.png)
 
 This sets up a fun double loop structure among the 3 cells in the top left, in one loop they are all C's in the other loop there is a contradiction where they are all A's and B's at the same time, but the constraint propagator isn't smart enough to see that contradiction.
 
