@@ -1,6 +1,6 @@
 # Solving hexagonal regexp crosswords
 
-Lets write a solver for [this beast](http://twiki.org/p/pub/Codev/TWikiPresentation2013x03x07/regex-crossword-puzzle.png).
+Lets write a solver for ![this beast](regex-crossword-puzzle.png).
 
 First step, break the problem down, we have a hexgrid, always a fun way to start. Each cell in the grid can take a letter as it's value. Along each row, column and diagonal of the grid... lets just call them "lines". Along each line of the grid is a regexp that constrains the values of the cells in that line.
 
